@@ -40,7 +40,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
 
@@ -127,11 +127,14 @@ jobs:
         if: github.event_name != 'pull_request'
         run: |
           mkdir -p /tmp/digests
-          touch "/tmp/digests/${{ steps.push.outputs.digest }}"
+          digest='${{ steps.push.outputs.digest }}'
+          # upload-artifact rejects ':' in filenames; store the bare hex and
+          # re-add the sha256: prefix in the merge job.
+          touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest
         if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: digest-${{ matrix.arch }}
           path: /tmp/digests/*
@@ -154,7 +157,7 @@ jobs:
       digest: ${{ steps.index.outputs.digest }}
     steps:
       - name: Download digests
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           path: /tmp/digests
           pattern: digest-*
@@ -192,7 +195,7 @@ jobs:
           set -euo pipefail
           mapfile -t tag_args        < <(jq -r '.tags[]       | "-t\n" + .' <<< "$DOCKER_METADATA_OUTPUT_JSON")
           mapfile -t annotation_args < <(jq -r '.annotations[] | "--annotation\n" + .' <<< "$DOCKER_METADATA_OUTPUT_JSON")
-          mapfile -t source_refs     < <(printf '%s\n' * | sed "s|^|${REGISTRY}/${IMAGE_NAME}@|")
+          mapfile -t source_refs     < <(printf '%s\n' * | sed "s|^|${REGISTRY}/${IMAGE_NAME}@sha256:|")
 
           docker buildx imagetools create \
             "${tag_args[@]}" "${annotation_args[@]}" "${source_refs[@]}"
@@ -203,7 +206,7 @@ jobs:
           docker buildx imagetools inspect "$ref"
 
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@v4
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.index.outputs.digest }}
