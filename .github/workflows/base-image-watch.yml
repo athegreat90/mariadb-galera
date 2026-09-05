@@ -1,0 +1,77 @@
+name: base-image-watch
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      changed: ${{ steps.compare.outputs.changed }}
+      sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v4
+
+      # Optional but recommended: avoids anonymous Docker Hub pull limits.
+      - name: Log in to Docker Hub
+        if: vars.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Compare pinned digest with upstream
+        id: compare
+        run: |
+          set -euo pipefail
+          from_line="$(grep -m1 -E '^FROM ' Dockerfile | awk '{print $2}')"
+          base_ref="${from_line%@*}"
+          pinned="${from_line#*@}"
+          latest="$(docker buildx imagetools inspect "$base_ref" --format '{{ .Manifest.Digest }}')"
+
+          echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
+          echo "pinned=$pinned"     >> "$GITHUB_OUTPUT"
+          echo "latest=$latest"     >> "$GITHUB_OUTPUT"
+
+          if [ "$pinned" = "$latest" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Up to date: $base_ref@$pinned"
+          else
+            echo "changed=true"  >> "$GITHUB_OUTPUT"
+            echo "Base image moved: $pinned -> $latest"
+          fi
+
+      - name: Bump digest and commit
+        id: commit
+        if: steps.compare.outputs.changed == 'true'
+        env:
+          BASE_REF: ${{ steps.compare.outputs.base_ref }}
+          PINNED:   ${{ steps.compare.outputs.pinned }}
+          LATEST:   ${{ steps.compare.outputs.latest }}
+        run: |
+          set -euo pipefail
+          sed -i "s|${PINNED}|${LATEST}|" Dockerfile
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -am "chore: bump ${BASE_REF} to ${LATEST}"
+          git push
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: check
+    if: needs.check.outputs.changed == 'true'
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: ${{ needs.check.outputs.sha }}
+    secrets: inherit
