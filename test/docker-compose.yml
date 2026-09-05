@@ -1,0 +1,51 @@
+name: galera
+
+x-node: &node
+  image: ghcr.io/OWNER/REPO:11.8
+  environment: &node-env
+    MARIADB_ROOT_PASSWORD: rootpass
+    MARIADB_GALERA_CLUSTER_NAME: demo
+    MARIADB_GALERA_CLUSTER_ADDRESS: gcomm://node1,node2,node3
+    MARIADB_GALERA_MARIABACKUP_PASSWORD: backuppass
+  healthcheck:
+    test: ["CMD", "/usr/local/bin/galera-healthcheck.sh"]
+    interval: 15s
+    timeout: 10s
+    retries: 20
+    start_period: 120s
+
+services:
+  node1:
+    <<: *node
+    hostname: node1
+    environment:
+      <<: *node-env
+      MARIADB_GALERA_NODE_NAME: node1
+      MARIADB_GALERA_CLUSTER_BOOTSTRAP: "yes"
+    ports: ["3306:3306"]
+    volumes: ["node1-data:/var/lib/mysql"]
+
+  node2:
+    <<: *node
+    hostname: node2
+    environment:
+      <<: *node-env
+      MARIADB_GALERA_NODE_NAME: node2
+    depends_on:
+      node1: {condition: service_healthy}
+    volumes: ["node2-data:/var/lib/mysql"]
+
+  node3:
+    <<: *node
+    hostname: node3
+    environment:
+      <<: *node-env
+      MARIADB_GALERA_NODE_NAME: node3
+    depends_on:
+      node2: {condition: service_healthy}
+    volumes: ["node3-data:/var/lib/mysql"]
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:

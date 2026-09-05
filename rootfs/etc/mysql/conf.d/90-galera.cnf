@@ -1,0 +1,14 @@
+[mysqld]
+binlog_format               = ROW
+default_storage_engine      = InnoDB
+innodb_autoinc_lock_mode    = 2
+bind-address                = 0.0.0.0
+
+wsrep_on                    = ON
+wsrep_provider              = /usr/lib/galera/libgalera_smm.so
+wsrep_slave_threads         = 4
+wsrep_sst_method            = mariabackup
+
+# Runtime values (cluster name/address, node identity, SST auth) are generated
+# by galera-entrypoint.sh into the directory below. Must stay last in this file.
+!includedir /etc/mysql/galera.conf.d/
