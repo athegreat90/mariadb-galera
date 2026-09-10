@@ -3,7 +3,7 @@
 # Pinned by digest: Dependabot can bump it, and base-image-watch.yml compares
 # against it. Get a real digest with:
 #   docker buildx imagetools inspect mariadb:11.8 --format '{{ .Manifest.Digest }}'
-FROM mariadb:11.8@sha256:2439dcd7d14010ecd1ff7a4e1c5abe8e208c34fe35290744deeeaac3569043c3
+FROM mariadb:11.8@sha256:2d2f4095530294735a857cfe22bb101e19b0849b416911c796ec4aa81b164a62
 
 ARG BASE_IMAGE_REF="docker.io/library/mariadb:11.8"
 ARG BASE_IMAGE_DIGEST=""
