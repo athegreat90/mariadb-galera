@@ -70,9 +70,11 @@ jobs:
           [ "$series_list" != "[]" ] \
             || { echo "no series selected (filter: '$SERIES_FILTER')" >&2; exit 1; }
 
-          echo "matrix=$matrix"           >> "$GITHUB_OUTPUT"
-          echo "series_list=$series_list" >> "$GITHUB_OUTPUT"
-          echo "latest_lts=$latest_lts"   >> "$GITHUB_OUTPUT"
+          {
+            echo "matrix=$matrix"
+            echo "series_list=$series_list"
+            echo "latest_lts=$latest_lts"
+          } >> "$GITHUB_OUTPUT"
           echo "Series: $series_list (latest LTS: $latest_lts)" >> "$GITHUB_STEP_SUMMARY"
 
   build:
@@ -259,13 +261,15 @@ jobs:
           DOCKER_METADATA_ANNOTATIONS_LEVELS: index
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Tags are explicit; `latest`/`lts` follow only the newest LTS series.
+          flavor: latest=false
           tags: |
             type=raw,value=${{ matrix.series }}
             type=raw,value=${{ steps.ver.outputs.full }}
             type=raw,value=${{ steps.ver.outputs.full }}-{{date 'YYYYMMDD-HHmmss'}}
             type=raw,value=latest,enable=${{ matrix.series == needs.setup.outputs.latest_lts }}
             type=raw,value=lts,enable=${{ matrix.series == needs.setup.outputs.latest_lts }}
-            type=sha,format=long,suffix=-${{ matrix.series }}
+            type=raw,value=sha-${{ github.sha }}-${{ matrix.series }}
           labels: |
             org.opencontainers.image.version=${{ steps.ver.outputs.full }}
 
