@@ -35,12 +35,17 @@ docker build -t mariadb-galera:test-11.8 \
 # CI runs this too, right after the smoke test.
 ./test/sst-test.sh mariadb-galera:test
 
+# Outage-recovery test — SIGKILLs both nodes (as in the 2026-09-15 quorum loss), checks
+# the bootstrap guard, recovers with galera-recover.sh, and checks the provider-options
+# env vars. CI runs this after the SST test.
+./test/resilience-test.sh mariadb-galera:test
+
 # 3-node cluster locally (defaults to ghcr.io/athegreat90/mariadb-galera:lts;
 # override with TAG=11.8, or edit `image:` to use a local tag)
 docker compose -f test/docker-compose.yml up
 
 # Lint the shell scripts (all use `set -Eeuo pipefail`; keep them shellcheck-clean)
-shellcheck rootfs/usr/local/bin/*.sh test/smoke-test.sh test/sst-test.sh
+shellcheck rootfs/usr/local/bin/*.sh test/*.sh
 
 # Resolve a series' current upstream digest (what base-image-watch.yml writes to
 # .github/base-images.json)
@@ -73,14 +78,28 @@ Runs before, and then `exec`s into, the **upstream** `/usr/local/bin/docker-entr
 Its own job:
 1. `file_env` resolves `VAR` vs `VAR_FILE` secrets (mirrors the upstream `_FILE` convention).
 2. Defaults all `MARIADB_GALERA_*` vars; auto-detects `NODE_ADDRESS` via `ip route get 1.1.1.1`.
-3. Writes `99-galera-runtime.cnf` (umask 0077 for the SST password).
+3. Writes `99-galera-runtime.cnf` (umask 0077 for the SST password). It also assembles
+   the one `wsrep_provider_options` line from `MARIADB_GALERA_IST_RECV_BIND` and
+   `MARIADB_GALERA_PROVIDER_OPTIONS`; that variable is a single string, so a later
+   setting (another `.cnf`, or `--wsrep-provider-options` in `EXTRA_FLAGS`) *replaces* it
+   instead of merging. Then logs `grastate.dat` (uuid/seqno/safe_to_bootstrap) and flags
+   an unclean shutdown (`seqno -1`).
 4. On a **fresh datadir only** (`/var/lib/mysql/mysql` absent → this is the bootstrap
    node), queues `/docker-entrypoint-initdb.d/00-galera-sst-user.sql` to create the
    mariabackup SST user. Joiners inherit that account through SST, so it is only
    created once.
 5. Appends `--wsrep-new-cluster` when `MARIADB_GALERA_CLUSTER_BOOTSTRAP=yes`, and
    forces `safe_to_bootstrap: 1` in `grastate.dat` when `..._FORCE_SAFETOBOOTSTRAP=yes`.
+   Guard: with BOOTSTRAP=yes on an existing datadir whose `grastate.dat` says
+   `safe_to_bootstrap: 0` and no FORCE, it exits 1 with an explanation (a stale BOOTSTRAP
+   env — container env is frozen at create time — or a full-cluster outage) instead of
+   letting Galera abort cryptically. With `safe_to_bootstrap: 1` it warns to remove the flag.
 6. Appends word-split `MARIADB_GALERA_EXTRA_FLAGS`.
+
+`galera-recover.sh` (same directory) is run by hand against a *stopped* node's datadir
+(`docker run --rm --entrypoint galera-recover.sh -v <data>:/var/lib/mysql IMAGE`). It runs
+`mariadbd --wsrep-recover` and prints `uuid=… seqno=… safe_to_bootstrap=…`; the highest
+seqno is the node to bootstrap after a full outage.
 
 Exactly one node in a new cluster sets `CLUSTER_BOOTSTRAP=yes`; the rest join via
 `MARIADB_GALERA_CLUSTER_ADDRESS=gcomm://node1,node2,node3`.
@@ -128,7 +147,8 @@ Dependabot's `docker` ecosystem is intentionally **not** used (it would edit a
 - `build` matrix (series × arch, 4 legs): native runners per arch (`ubuntu-24.04`,
   `ubuntu-24.04-arm`). Builds with `load: true` → asserts the image's real
   `mariadbd --version` series equals the matrix series (catches a JSON pin pointing at
-  the wrong tag) → runs `./test/smoke-test.sh` and `./test/sst-test.sh` on real
+  the wrong tag) → runs `./test/smoke-test.sh`, `./test/sst-test.sh` and
+  `./test/resilience-test.sh` on real
   hardware → rebuilds (cache hit, scope `<series>-<arch>`) and pushes **by digest**
   (`push-by-digest=true`, no tag) with provenance + SBOM. Uploads
   `digest-<series>-<arch>` artifacts, plus (amd64 only) `version-<series>` carrying the

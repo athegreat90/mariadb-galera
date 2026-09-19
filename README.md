@@ -32,8 +32,9 @@ ghcr.io/athegreat90/mariadb-galera
 newest LTS, so a container that pulls them can jump a major version. For a running
 cluster pin an immutable `<version>-<timestamp>` tag (or a series tag) and disable
 auto-updaters such as Watchtower for the database. Moving a datadir from 11.8 to 12.3
-is a MariaDB upgrade (roll one node at a time, run `mariadb-upgrade` on each) and
-downgrading is not supported.
+is a MariaDB upgrade (roll one node at a time, then run `mariadb-upgrade` **once**, after
+every node is on the new version, so its system-table changes never replicate into a
+node still on the old one) and downgrading is not supported.
 
 You can also pin by digest (`...@sha256:...`). Every published manifest carries
 build provenance and an SBOM.
@@ -68,7 +69,9 @@ variable and its `_FILE` form is an error.
 | `MARIADB_GALERA_FORCE_SAFETOBOOTSTRAP` | `no` | Recovery only. With `CLUSTER_BOOTSTRAP=yes`, forces `safe_to_bootstrap: 1` in `grastate.dat` so a node that wasn't cleanly shut down can still bootstrap. |
 | `MARIADB_GALERA_MARIABACKUP_USER` | `mariabackup` | Username for the SST account. |
 | `MARIADB_GALERA_SST_METHOD` | `mariabackup` | State-transfer method. `mariabackup` is non-blocking and recommended. |
-| `MARIADB_GALERA_EXTRA_FLAGS` | — | Extra space-separated flags appended to `mariadbd`. |
+| `MARIADB_GALERA_IST_RECV_BIND` | — | Address the IST receiver binds to (sets `ist.recv_bind`). Use `0.0.0.0` in a bridge-networked or rootless container that cannot bind its advertised `NODE_ADDRESS` — see [Bridge networking](#bridge-networking-and-rootless-docker). |
+| `MARIADB_GALERA_PROVIDER_OPTIONS` | — | Extra Galera provider options, e.g. `evs.suspect_timeout=PT10S; evs.inactive_timeout=PT30S`. Combined with `IST_RECV_BIND` into the single `wsrep_provider_options` setting. |
+| `MARIADB_GALERA_EXTRA_FLAGS` | — | Extra space-separated flags appended to `mariadbd`. A `--wsrep-provider-options=…` here **replaces** the two variables above (the option is one string; settings do not merge). |
 
 **Initialization vars** (`MARIADB_DATABASE`, `MARIADB_USER`, `MARIADB_PASSWORD`,
 scripts in `/docker-entrypoint-initdb.d/`, …) behave exactly as in the upstream
@@ -170,6 +173,46 @@ cluster instead of rejoining the existing one. For routine restarts of individua
 nodes, no bootstrap flag is needed anywhere — a restarted node rejoins
 automatically. See [Recovering a cluster](#recovering-a-cluster) for a full outage.
 
+## Bridge networking and rootless Docker
+
+When a node runs on a bridge network (or under rootless Docker) with published ports,
+its advertised `MARIADB_GALERA_NODE_ADDRESS` (e.g. a Tailscale IP) is not an address
+inside the container. The Galera IST receiver defaults to binding that address and fails
+with `Cannot assign requested address`. Bind it to the wildcard while still advertising
+the real address, and loosen the failure-detection timeouts if the link has latency
+spikes (a VPN, for example):
+
+```yaml
+services:
+  mariadb-galera:
+    image: ghcr.io/athegreat90/mariadb-galera:lts
+    environment:
+      MARIADB_GALERA_NODE_ADDRESS: x.x.x.x        # address the other nodes use
+      MARIADB_GALERA_IST_RECV_BIND: 0.0.0.0
+      MARIADB_GALERA_PROVIDER_OPTIONS: "evs.suspect_timeout=PT10S; evs.inactive_timeout=PT30S; evs.install_timeout=PT15S"
+    ports:
+      - "3306:3306"
+      - "4567:4567/tcp"
+      - "4567:4567/udp"
+      - "4568:4568/tcp"
+      - "4444:4444/tcp"
+```
+
+## Restarting nodes safely
+
+- **Never restart all nodes at once.** Galera needs the others up while one restarts.
+  Update one node at a time and wait for `wsrep_local_state_comment=Synced` before the
+  next. Do not point a generic auto-updater (e.g. Watchtower) at every node on the same
+  schedule; that is how a whole cluster goes down together.
+- **Give MariaDB time to stop cleanly.** Docker kills a container after 10 s by default.
+  A node killed mid-shutdown leaves `seqno: -1` in `grastate.dat`, and if every node is
+  killed that way none of them can bootstrap on its own. Set
+  `stop_grace_period: 60s` (Compose) or `--stop-timeout 60` (`docker run`).
+- **Container environment is frozen when the container is created.** After changing any
+  `MARIADB_GALERA_*` variable, recreate the container (`docker compose up -d
+  --force-recreate`). A stale `MARIADB_GALERA_CLUSTER_BOOTSTRAP=yes` left in a running
+  container makes every restart try to start a new cluster.
+
 ## Using secrets instead of plaintext
 
 Every password variable has a `_FILE` counterpart. With Compose:
@@ -215,19 +258,38 @@ cluster automatically — via IST if it was only briefly away, or a full SST oth
 
 ### The whole cluster is down
 
-Galera must be re-bootstrapped from the node that had the most recent data:
+Galera must be re-bootstrapped from the node that had the most recent data. After an
+unclean shutdown every node shows `seqno: -1` and `safe_to_bootstrap: 0` in
+`grastate.dat`, so the file cannot tell you which node that is — the image ships a helper
+that can.
 
-1. On each node's volume, look at `/var/lib/mysql/grastate.dat` and find the one
-   with the **highest `seqno`** (a `seqno` of `-1` means that node did not shut down
-   cleanly).
-2. Start that node with:
+1. Stop every node's container. On each node, run the helper against that node's data
+   directory (the node must not be running):
+
+   ```bash
+   docker run --rm --entrypoint galera-recover.sh \
+     -v /path/to/node-data:/var/lib/mysql \
+     ghcr.io/athegreat90/mariadb-galera:lts
+   # uuid=<cluster-uuid> seqno=956 safe_to_bootstrap=0
+   ```
+
+   It runs InnoDB crash recovery and prints the position that node can recover to.
+   Compare the `seqno` across nodes (same `uuid`); the **highest** is the one to
+   bootstrap. If they tie, any of the tied nodes will do.
+2. Start that node with both:
    - `MARIADB_GALERA_CLUSTER_BOOTSTRAP=yes`
-   - `MARIADB_GALERA_FORCE_SAFETOBOOTSTRAP=yes` *only if* its `grastate.dat` shows
-     `safe_to_bootstrap: 0` (i.e. it wasn't shut down last/cleanly and you have
-     confirmed it nonetheless holds the newest data).
+   - `MARIADB_GALERA_FORCE_SAFETOBOOTSTRAP=yes`
+
+   Without the second, the image refuses to bootstrap a node whose `grastate.dat` has
+   `safe_to_bootstrap: 0` and tells you why; setting it is your confirmation that this
+   node holds the newest data.
 3. Start the remaining nodes normally. They will SST/IST from the bootstrapped node.
-4. Once the cluster is healthy, **remove the two bootstrap variables** from the first
-   node so its next restart rejoins instead of forking a new cluster.
+4. Once the cluster is healthy, **remove the two bootstrap variables** and recreate that
+   node's container so its next restart rejoins instead of forking a new cluster.
+
+If a node crash-loops with `safe_to_bootstrap` in its log even though you never meant
+to bootstrap, `MARIADB_GALERA_CLUSTER_BOOTSTRAP=yes` is still set on the running
+container: remove it and recreate the container.
 
 ## Build it yourself
 
@@ -242,6 +304,9 @@ docker build -t mariadb-galera:local-11.8 \
 
 # forced 2-node state transfer test (joiner receives data via mariabackup SST)
 ./test/sst-test.sh mariadb-galera:local
+
+# outage test: kills both nodes, checks the bootstrap guard and galera-recover.sh
+./test/resilience-test.sh mariadb-galera:local
 ```
 
 The `Dockerfile` takes its base from the `BASE_IMAGE` build argument. CI passes the
