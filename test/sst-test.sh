@@ -34,8 +34,7 @@ status() { # status CONTAINER VARIABLE
 }
 
 wait_healthy() { # wait_healthy CONTAINER
-  local i
-  for i in $(seq 1 90); do
+  for _ in $(seq 1 90); do
     if [ "$(docker inspect -f '{{.State.Health.Status}}' "$1")" = "healthy" ]; then
       return 0
     fi

@@ -43,7 +43,8 @@ COPY rootfs/ /
 RUN set -eux; \
     mkdir -p /etc/mysql/galera.conf.d /docker-entrypoint-initdb.d; \
     chown -R mysql:mysql /etc/mysql/galera.conf.d /docker-entrypoint-initdb.d; \
-    chmod 0755 /usr/local/bin/galera-entrypoint.sh /usr/local/bin/galera-healthcheck.sh
+    chmod 0755 /usr/local/bin/galera-entrypoint.sh /usr/local/bin/galera-healthcheck.sh \
+               /usr/local/bin/galera-recover.sh
 
 # 3306 SQL, 4567 replication (tcp+udp), 4568 IST, 4444 SST
 EXPOSE 3306 4567/tcp 4567/udp 4568/tcp 4444/tcp

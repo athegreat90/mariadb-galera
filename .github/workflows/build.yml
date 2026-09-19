@@ -151,6 +151,9 @@ jobs:
       - name: Forced-SST 2-node test on ${{ matrix.arch }}
         run: ./test/sst-test.sh mariadb-galera:test
 
+      - name: Outage-recovery test on ${{ matrix.arch }}
+        run: ./test/resilience-test.sh mariadb-galera:test
+
       # Second call is a cache hit; it only re-exports and pushes.
       - name: Build and push by digest
         id: push

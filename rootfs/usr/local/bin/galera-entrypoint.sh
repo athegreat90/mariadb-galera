@@ -34,6 +34,8 @@ file_env MARIADB_ROOT_PASSWORD "${MYSQL_ROOT_PASSWORD:-}"
 : "${MARIADB_GALERA_MARIABACKUP_USER:=mariabackup}"
 : "${MARIADB_GALERA_SST_METHOD:=mariabackup}"
 : "${MARIADB_GALERA_EXTRA_FLAGS:=}"
+: "${MARIADB_GALERA_PROVIDER_OPTIONS:=}"
+: "${MARIADB_GALERA_IST_RECV_BIND:=}"
 
 if [ -z "${MARIADB_GALERA_NODE_ADDRESS}" ]; then
   log "ERROR: could not detect node address; set MARIADB_GALERA_NODE_ADDRESS"
@@ -46,6 +48,18 @@ if [ "${MARIADB_GALERA_SST_METHOD}" = "mariabackup" ] \
   exit 1
 fi
 
+# wsrep_provider_options is a single string: a later setting (another .cnf, or a
+# --wsrep-provider-options flag in EXTRA_FLAGS) replaces it rather than merging,
+# so everything for it is assembled here into one line.
+provider_opts=""
+[ -n "${MARIADB_GALERA_IST_RECV_BIND}" ] \
+  && provider_opts="ist.recv_bind=${MARIADB_GALERA_IST_RECV_BIND}"
+[ -n "${MARIADB_GALERA_PROVIDER_OPTIONS}" ] \
+  && provider_opts="${provider_opts:+${provider_opts}; }${MARIADB_GALERA_PROVIDER_OPTIONS}"
+case "${provider_opts}" in
+  *\"*) log 'ERROR: MARIADB_GALERA_PROVIDER_OPTIONS / _IST_RECV_BIND must not contain double quotes'; exit 1 ;;
+esac
+
 conf="/etc/mysql/galera.conf.d/99-galera-runtime.cnf"
 umask 0077
 cat > "${conf}" <<EOF
@@ -57,8 +71,21 @@ wsrep_node_address    = ${MARIADB_GALERA_NODE_ADDRESS}
 wsrep_sst_method      = ${MARIADB_GALERA_SST_METHOD}
 wsrep_sst_auth        = ${MARIADB_GALERA_MARIABACKUP_USER}:${MARIADB_GALERA_MARIABACKUP_PASSWORD}
 EOF
+if [ -n "${provider_opts}" ]; then
+  printf 'wsrep_provider_options = "%s"\n' "${provider_opts}" >> "${conf}"
+  log "wsrep_provider_options = ${provider_opts}"
+fi
 umask 0022
 log "wrote ${conf} (node=${MARIADB_GALERA_NODE_NAME} addr=${MARIADB_GALERA_NODE_ADDRESS})"
+
+grastate="/var/lib/mysql/grastate.dat"
+grastate_val() { sed -n "s/^$1:[[:space:]]*//p" "${grastate}" 2>/dev/null | head -n1; }
+if [ -f "${grastate}" ]; then
+  log "grastate: uuid=$(grastate_val uuid) seqno=$(grastate_val seqno) safe_to_bootstrap=$(grastate_val safe_to_bootstrap)"
+  if [ "$(grastate_val seqno)" = "-1" ]; then
+    log "previous shutdown was not clean (seqno -1). If every node is down, run galera-recover.sh on each to find the most advanced one"
+  fi
+fi
 
 # Only runs on a fresh datadir, i.e. the bootstrap node. Joiners inherit the
 # account through SST.
@@ -80,10 +107,21 @@ fi
 extra_args=()
 
 if [ "${MARIADB_GALERA_CLUSTER_BOOTSTRAP}" = "yes" ]; then
-  grastate="/var/lib/mysql/grastate.dat"
-  if [ "${MARIADB_GALERA_FORCE_SAFETOBOOTSTRAP}" = "yes" ] && [ -f "${grastate}" ]; then
-    log "forcing safe_to_bootstrap=1 in ${grastate}"
-    sed -i 's/^safe_to_bootstrap:.*/safe_to_bootstrap: 1/' "${grastate}"
+  if [ -f "${grastate}" ]; then
+    if [ "${MARIADB_GALERA_FORCE_SAFETOBOOTSTRAP}" = "yes" ]; then
+      log "forcing safe_to_bootstrap=1 in ${grastate}"
+      sed -i 's/^safe_to_bootstrap:.*/safe_to_bootstrap: 1/' "${grastate}"
+    elif [ "$(grastate_val safe_to_bootstrap)" = "0" ]; then
+      log "ERROR: refusing to bootstrap: ${grastate} has safe_to_bootstrap=0, so this node may not hold the latest data."
+      log "  * If this is an existing cluster node, MARIADB_GALERA_CLUSTER_BOOTSTRAP=yes is probably a stale setting:"
+      log "    unset it and recreate the container (container env is frozen when the container is created)."
+      log "  * If the WHOLE cluster is down, run galera-recover.sh on every node's datadir, then start the node with the"
+      log "    highest seqno with MARIADB_GALERA_CLUSTER_BOOTSTRAP=yes and MARIADB_GALERA_FORCE_SAFETOBOOTSTRAP=yes."
+      exit 1
+    else
+      log "WARNING: bootstrapping on an existing datadir; remove MARIADB_GALERA_CLUSTER_BOOTSTRAP after this start so a"
+      log "  later restart rejoins the cluster instead of forming a new one"
+    fi
   fi
   log "bootstrapping a new cluster (--wsrep-new-cluster)"
   extra_args+=(--wsrep-new-cluster)
