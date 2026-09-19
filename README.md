@@ -1,8 +1,10 @@
 # mariadb-galera
 
-A container image for running a **MariaDB 11.8 + Galera 4** multi-primary cluster —
+A container image for running a **MariaDB + Galera 4** multi-primary cluster —
 synchronous replication, read/write on every node, automatic node provisioning via
-state transfer.
+state transfer. Two MariaDB LTS lines are published in parallel: **12.3** (current
+LTS, the default `:latest` / `:lts`) and **11.8** (previous LTS, maintained until
+upstream end of life).
 
 It is built on the official [`mariadb`](https://hub.docker.com/_/mariadb) image and
 only adds the Galera provider plus a small entrypoint wrapper, so **everything the
@@ -20,10 +22,18 @@ ghcr.io/athegreat90/mariadb-galera
 
 | Tag | Meaning |
 |-----|---------|
-| `11.8` | Latest build of the 11.8 series (moves) |
-| `latest` | Same as `11.8` |
-| `11.8-YYYYMMDD-HHmmss` | Immutable, timestamped build — **use this in production** |
-| `sha-<git-sha>` | Build from a specific commit |
+| `latest`, `lts` | Latest build of the **current LTS series** (12.3). Moves — and moves to the next LTS when one is adopted. |
+| `12.3`, `11.8` | Latest build of that series (moves) |
+| `12.3.x`, `11.8.y` | Latest build of that exact MariaDB version (moves with base-image rebuilds) |
+| `<version>-YYYYMMDD-HHmmss` (e.g. `12.3.3-20260910-041700`) | Immutable, timestamped build — **use this in production** |
+| `sha-<git-sha>-<series>` (e.g. `sha-<git-sha>-12.3`) | Build of a specific commit for one series |
+
+**Upgrading between series is not automatic-safe.** `:latest` / `:lts` follow the
+newest LTS, so a container that pulls them can jump a major version. For a running
+cluster pin an immutable `<version>-<timestamp>` tag (or a series tag) and disable
+auto-updaters such as Watchtower for the database. Moving a datadir from 11.8 to 12.3
+is a MariaDB upgrade (roll one node at a time, run `mariadb-upgrade` on each) and
+downgrading is not supported.
 
 You can also pin by digest (`...@sha256:...`). Every published manifest carries
 build provenance and an SBOM.
@@ -78,7 +88,7 @@ docker run -d --name galera \
   -e MARIADB_GALERA_CLUSTER_BOOTSTRAP=yes \
   -e MARIADB_GALERA_MARIABACKUP_PASSWORD=backuppass \
   -p 3306:3306 \
-  ghcr.io/athegreat90/mariadb-galera:11.8
+  ghcr.io/athegreat90/mariadb-galera:lts
 
 # wait for it to report healthy
 docker inspect -f '{{.State.Health.Status}}' galera
@@ -97,7 +107,7 @@ Save as `docker-compose.yml`:
 name: galera
 
 x-node: &node
-  image: ghcr.io/athegreat90/mariadb-galera:11.8
+  image: ghcr.io/athegreat90/mariadb-galera:lts   # or :11.8 (previous LTS); pin a <version>-<timestamp> tag in production
   restart: unless-stopped
   environment: &node-env
     MARIADB_ROOT_PASSWORD: rootpass
@@ -167,7 +177,7 @@ Every password variable has a `_FILE` counterpart. With Compose:
 ```yaml
 services:
   node1:
-    image: ghcr.io/athegreat90/mariadb-galera:11.8
+    image: ghcr.io/athegreat90/mariadb-galera:lts
     environment:
       MARIADB_ROOT_PASSWORD_FILE: /run/secrets/root_pw
       MARIADB_GALERA_MARIABACKUP_PASSWORD_FILE: /run/secrets/sst_pw
@@ -222,12 +232,20 @@ Galera must be re-bootstrapped from the node that had the most recent data:
 ## Build it yourself
 
 ```bash
+# builds on the current LTS by default; pick a series with --build-arg
 docker build -t mariadb-galera:local .
+docker build -t mariadb-galera:local-11.8 \
+  --build-arg BASE_IMAGE=docker.io/library/mariadb:11.8 .
 
 # single-node smoke test (boots a node, waits for healthy, checks cluster size)
 ./test/smoke-test.sh mariadb-galera:local
+
+# forced 2-node state transfer test (joiner receives data via mariabackup SST)
+./test/sst-test.sh mariadb-galera:local
 ```
 
-The `FROM` line in the `Dockerfile` carries a placeholder digest; CI and Dependabot
-populate the real one at build time. See [`CLAUDE.md`](CLAUDE.md) for the full build
-and release pipeline.
+The `Dockerfile` takes its base from the `BASE_IMAGE` build argument. CI passes the
+digest-pinned image for each series from [`.github/base-images.json`](.github/base-images.json),
+and a daily workflow (`base-image-watch`) refreshes those digests and rebuilds the
+series that moved. See [`CLAUDE.md`](CLAUDE.md) for the full build and release
+pipeline, and for how a series is added or retired.

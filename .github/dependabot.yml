@@ -1,16 +1,7 @@
 version: 2
 updates:
-  - package-ecosystem: docker
-    directory: /
-    schedule:
-      interval: daily
-    commit-message:
-      prefix: "chore(docker)"
-    # Stay on the MariaDB LTS series (11.8). Major bumps (12.x are short-term
-    # releases) are done deliberately, not by Dependabot.
-    ignore:
-      - dependency-name: "mariadb"
-        update-types: ["version-update:semver-major"]
+  # No `docker` ecosystem on purpose: base images are pinned per MariaDB series in
+  # .github/base-images.json and kept current by .github/workflows/base-image-watch.yml.
   - package-ecosystem: github-actions
     directory: /
     schedule:

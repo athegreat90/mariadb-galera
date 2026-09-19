@@ -1,0 +1,15 @@
+{
+  "latest_lts": "12.3",
+  "series": {
+    "11.8": {
+      "ref": "docker.io/library/mariadb:11.8",
+      "digest": "sha256:79d59758afc91b89b120b0a8904d637f5a3b3e1c4900f29b740d6d46c72fef68",
+      "note": "previous LTS; maintain until upstream EOL 2028-06"
+    },
+    "12.3": {
+      "ref": "docker.io/library/mariadb:12.3",
+      "digest": "sha256:805c8e104bd563d5bfa24fadd3f31cd419ea859cb5277f32b5dbf2db714f9ed1",
+      "note": "current LTS; tracked by :latest and :lts"
+    }
+  }
+}

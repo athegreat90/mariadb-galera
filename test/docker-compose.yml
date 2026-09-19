@@ -1,7 +1,7 @@
 name: galera
 
 x-node: &node
-  image: ghcr.io/OWNER/REPO:11.8
+  image: ghcr.io/athegreat90/mariadb-galera:${TAG:-lts}
   environment: &node-env
     MARIADB_ROOT_PASSWORD: rootpass
     MARIADB_GALERA_CLUSTER_NAME: demo

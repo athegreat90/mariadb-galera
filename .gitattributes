@@ -1,0 +1,8 @@
+# Scripts and config are copied into Linux containers or run on Linux CI; a CRLF
+# checkout (Windows core.autocrlf=true) breaks them with "bash\r: No such file".
+* text=auto
+*.sh text eol=lf
+Dockerfile text eol=lf
+rootfs/** text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
