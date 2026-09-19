@@ -1,0 +1,11 @@
+# Local tooling state (contains host paths and command allow-lists)
+.claude/
+
+# Never commit credentials or key material
+secrets/
+*.env
+.env
+*.pem
+*.key
+*.crt
+*.p12
