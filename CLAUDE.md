@@ -182,3 +182,13 @@ Dependabot's `docker` ecosystem is intentionally **not** used (it would edit a
   timestamp, secrets written under `umask 0077`.
 - The `test -f /usr/lib/galera/libgalera_smm.so` at the end of the Dockerfile `RUN`
   is a deliberate build-time assertion that the wsrep provider exists — don't remove it.
+- **Security guards (keep them):** `rootfs/usr/local/bin/gosu` is a `setpriv` wrapper that
+  replaces the upstream image's Go `gosu` binary (its bundled Go stdlib carries dozens of
+  CVEs); the Dockerfile deletes the original in its own layer (scanners still report a file
+  that is only overwritten) and fails the build if `gosu` is not a script. Every GitHub
+  Action is pinned to a full commit SHA with the tag in a trailing comment; Dependabot's
+  `github-actions` ecosystem keeps them current, and the repo enforces SHA pinning. Workflows
+  set `permissions: {}` at the top and grant per job.
+- `.github/workflows/security.yml` (PRs, pushes to main, weekly) runs shellcheck, hadolint,
+  actionlint, gitleaks and a Trivy scan of each series' image; a fixable CRITICAL fails it.
+  Its scanner images are pinned by digest and are bumped by hand.

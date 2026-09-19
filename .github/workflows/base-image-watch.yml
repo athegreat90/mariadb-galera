@@ -5,6 +5,9 @@ on:
     - cron: '17 4 * * *'
   workflow_dispatch:
 
+# No default token permissions: every job below declares exactly what it needs.
+permissions: {}
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -15,14 +18,14 @@ jobs:
       changed_series: ${{ steps.compare.outputs.changed_series }}
       sha: ${{ steps.commit.outputs.sha }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       # Optional but recommended: avoids anonymous Docker Hub pull limits.
       - name: Log in to Docker Hub
         if: vars.DOCKERHUB_USERNAME != ''
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}

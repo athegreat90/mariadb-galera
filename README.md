@@ -51,6 +51,13 @@ build provenance and an SBOM.
 All four must be reachable **between nodes**. Only `3306` needs to be reachable by
 clients.
 
+> **Security:** Galera has no authentication or encryption of its own. Anyone who can
+> reach `4567`, `4568` or `4444` and knows the cluster name can join the cluster and copy
+> the whole database, and the traffic is readable on the wire. Keep those three ports on a
+> network you trust (a VPN such as Tailscale, or a private network) and never publish them
+> on `0.0.0.0` of a LAN or the internet — bind them to the private address instead, as in
+> [Bridge networking](#bridge-networking-and-rootless-docker). See [`SECURITY.md`](SECURITY.md).
+
 ## Configuration
 
 All configuration is through environment variables. Secrets also accept a `_FILE`
@@ -191,11 +198,11 @@ services:
       MARIADB_GALERA_IST_RECV_BIND: 0.0.0.0
       MARIADB_GALERA_PROVIDER_OPTIONS: "evs.suspect_timeout=PT10S; evs.inactive_timeout=PT30S; evs.install_timeout=PT15S"
     ports:
-      - "3306:3306"
-      - "4567:4567/tcp"
-      - "4567:4567/udp"
-      - "4568:4568/tcp"
-      - "4444:4444/tcp"
+      - "3306:3306"                       # clients
+      - "100.97.4.47:4567:4567/tcp"       # cluster ports: publish on the private
+      - "100.97.4.47:4567:4567/udp"       # (VPN) address only, never on 0.0.0.0
+      - "100.97.4.47:4568:4568/tcp"
+      - "100.97.4.47:4444:4444/tcp"
 ```
 
 ## Restarting nodes safely

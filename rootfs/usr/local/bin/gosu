@@ -1,0 +1,28 @@
+#!/bin/sh
+# Minimal stand-in for tianon/gosu, built on util-linux `setpriv`.
+#
+# The upstream mariadb image ships gosu as a Go binary, and its bundled Go standard
+# library carries dozens of published CVEs that scanners flag on every build. Nothing
+# in this image needs a Go binary for privilege dropping, and this image runs as
+# `mysql` anyway, so the upstream entrypoint's `exec gosu mysql ...` is the only user.
+# This wrapper keeps that interface:  gosu user[:group] command [args...]
+set -eu
+
+if [ "$#" -lt 2 ]; then
+  echo "usage: gosu user[:group] command [args...]" >&2
+  exit 1
+fi
+
+spec="$1"
+shift
+user="${spec%%:*}"
+
+home="$(getent passwd "${user}" | cut -d: -f6)" || home=""
+[ -n "${home}" ] && export HOME="${home}"
+
+if [ "${user}" != "${spec}" ]; then
+  # explicit group: use exactly that group, no supplementary groups (like gosu)
+  exec setpriv --reuid="${user}" --regid="${spec#*:}" --clear-groups -- "$@"
+fi
+
+exec setpriv --reuid="${user}" --regid="$(id -g "${user}")" --init-groups -- "$@"
