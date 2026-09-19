@@ -1,11 +1,12 @@
 # syntax=docker/dockerfile:1.19
 
-# Pinned by digest: Dependabot can bump it, and base-image-watch.yml compares
-# against it. Get a real digest with:
-#   docker buildx imagetools inspect mariadb:11.8 --format '{{ .Manifest.Digest }}'
-FROM mariadb:11.8@sha256:79d59758afc91b89b120b0a8904d637f5a3b3e1c4900f29b740d6d46c72fef68
+# CI passes BASE_IMAGE as <ref>@<digest> from .github/base-images.json (one build
+# per MariaDB series). The default only makes a bare local `docker build .` work.
+ARG BASE_IMAGE="docker.io/library/mariadb:12.3"
+FROM ${BASE_IMAGE}
 
-ARG BASE_IMAGE_REF="docker.io/library/mariadb:11.8"
+ARG BASE_IMAGE
+ARG BASE_IMAGE_REF="${BASE_IMAGE}"
 ARG BASE_IMAGE_DIGEST=""
 ARG BUILD_DATE=""
 ARG VCS_REF=""
@@ -20,22 +21,18 @@ LABEL org.opencontainers.image.title="mariadb-galera" \
 USER root
 
 # galera-4 and mariadb-backup may already be present in the official image;
-# installing is a cheap no-op if so. The `test -f` guard fails the build early
-# if the wsrep provider is missing.
+# installing is a cheap no-op if so. MariaDB >= 12.3 unbundled the Galera server
+# hooks into `mariadb-server-galera` (11.8 has no such package), so it is added
+# only when the repo offers it. The `test -f` guard fails the build early if the
+# wsrep provider is missing.
 RUN set -eux; \
     apt-get update; \
     DEBIAN_FRONTEND=noninteractive apt-get upgrade -y; \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        galera-4 \
-        mariadb-backup \
-        socat \
-        rsync \
-        pv \
-        gawk \
-        iproute2 \
-        netcat-openbsd \
-        procps \
-        ca-certificates; \
+    pkgs="galera-4 mariadb-backup socat rsync pv gawk iproute2 netcat-openbsd procps ca-certificates"; \
+    if apt-cache show mariadb-server-galera 2>/dev/null | grep -q '^Package:'; then \
+        pkgs="mariadb-server-galera ${pkgs}"; \
+    fi; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${pkgs}; \
     rm -rf /var/lib/apt/lists/*; \
     test -f /usr/lib/galera/libgalera_smm.so
 

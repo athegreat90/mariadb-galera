@@ -12,6 +12,7 @@ jobs:
       contents: write
     outputs:
       changed: ${{ steps.compare.outputs.changed }}
+      changed_series: ${{ steps.compare.outputs.changed_series }}
       sha: ${{ steps.commit.outputs.sha }}
     steps:
       - uses: actions/checkout@v7
@@ -26,40 +27,47 @@ jobs:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Compare pinned digest with upstream
+      # Compares every series pinned in .github/base-images.json with upstream and
+      # rewrites the JSON in place for the ones that moved.
+      - name: Compare pinned digests with upstream
         id: compare
         run: |
           set -euo pipefail
-          from_line="$(grep -m1 -E '^FROM ' Dockerfile | awk '{print $2}')"
-          base_ref="${from_line%@*}"
-          pinned="${from_line#*@}"
-          latest="$(docker buildx imagetools inspect "$base_ref" --format '{{ .Manifest.Digest }}')"
+          cfg=.github/base-images.json
+          changed=()
+          while read -r series; do
+            ref="$(jq -r --arg s "$series" '.series[$s].ref'    "$cfg")"
+            pinned="$(jq -r --arg s "$series" '.series[$s].digest' "$cfg")"
+            latest="$(docker buildx imagetools inspect "$ref" --format '{{ .Manifest.Digest }}')"
+            if [ "$pinned" = "$latest" ]; then
+              echo "Up to date: $series ($ref@$pinned)"
+              continue
+            fi
+            echo "Base image moved: $series $pinned -> $latest"
+            tmp="$(mktemp)"
+            jq --arg s "$series" --arg d "$latest" '.series[$s].digest = $d' "$cfg" > "$tmp"
+            mv "$tmp" "$cfg"
+            changed+=("$series")
+          done < <(jq -r '.series | keys[]' "$cfg")
 
-          echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
-          echo "pinned=$pinned"     >> "$GITHUB_OUTPUT"
-          echo "latest=$latest"     >> "$GITHUB_OUTPUT"
-
-          if [ "$pinned" = "$latest" ]; then
+          if [ "${#changed[@]}" -eq 0 ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "Up to date: $base_ref@$pinned"
           else
-            echo "changed=true"  >> "$GITHUB_OUTPUT"
-            echo "Base image moved: $pinned -> $latest"
+            list="$(IFS=,; echo "${changed[*]}")"
+            echo "changed=true"            >> "$GITHUB_OUTPUT"
+            echo "changed_series=$list"    >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Bump digest and commit
+      - name: Commit bumped digests
         id: commit
         if: steps.compare.outputs.changed == 'true'
         env:
-          BASE_REF: ${{ steps.compare.outputs.base_ref }}
-          PINNED:   ${{ steps.compare.outputs.pinned }}
-          LATEST:   ${{ steps.compare.outputs.latest }}
+          CHANGED_SERIES: ${{ steps.compare.outputs.changed_series }}
         run: |
           set -euo pipefail
-          sed -i "s|${PINNED}|${LATEST}|" Dockerfile
           git config user.name  'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -am "chore: bump ${BASE_REF} to ${LATEST}"
+          git commit -am "chore: bump MariaDB base image digest(s) [${CHANGED_SERIES}]"
           git push
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
@@ -74,4 +82,5 @@ jobs:
     uses: ./.github/workflows/build.yml
     with:
       ref: ${{ needs.check.outputs.sha }}
+      series: ${{ needs.check.outputs.changed_series }}
     secrets: inherit

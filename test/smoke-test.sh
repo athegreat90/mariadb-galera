@@ -23,6 +23,10 @@ for _ in $(seq 1 60); do
       mariadb --protocol=socket -uroot -N -B \
       -e "SHOW STATUS LIKE 'wsrep_provider_version'" | awk '{print $2}')"
     [ "$size" = "1" ] || { echo "expected cluster size 1, got '$size'" >&2; exit 1; }
+    case "$provider" in
+      26.*) ;;
+      *) echo "WARN: unexpected wsrep_provider_version '${provider}' (expected 26.x)" >&2 ;;
+    esac
     echo "OK: single-node cluster synced, wsrep provider ${provider}"
     exit 0
   fi

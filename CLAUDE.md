@@ -5,9 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 A container image that adds Galera multi-primary clustering on top of the official
-`mariadb:11.8` image. There is no application code — the repo is a `Dockerfile`, a
+`mariadb` image. It is built and published for **two LTS series in parallel** — the
+current LTS (`12.3`, tracked by `:latest` / `:lts`) and the previous LTS (`11.8`, kept
+until upstream EOL). There is no application code — the repo is a `Dockerfile`, a
 `rootfs/` overlay that is copied verbatim into the image, a thin entrypoint wrapper,
-a healthcheck, and the CI that builds/tests/publishes the multi-arch image to GHCR.
+a healthcheck, and the CI that builds/tests/publishes the multi-arch images to GHCR.
 
 `README.md` is the user-facing usage guide (env vars, compose cluster, recovery);
 this file covers internals for contributors.
@@ -15,23 +17,39 @@ this file covers internals for contributors.
 ## Common commands
 
 ```bash
-# Build locally (single arch, into the local daemon)
+# Build locally (single arch, into the local daemon). A bare build uses the
+# Dockerfile's default BASE_IMAGE (the current LTS); to build a specific series
+# exactly as CI does, pass the pin from .github/base-images.json:
 docker build -t mariadb-galera:test .
+docker build -t mariadb-galera:test-11.8 \
+  --build-arg BASE_IMAGE=docker.io/library/mariadb:11.8@sha256:<digest> \
+  --build-arg BASE_IMAGE_REF=docker.io/library/mariadb:11.8 \
+  --build-arg BASE_IMAGE_DIGEST=sha256:<digest> .
 
 # Single-node smoke test — boots a bootstrap node, waits for HEALTHCHECK,
-# asserts wsrep_cluster_size == 1. This is exactly what CI runs.
+# asserts wsrep_cluster_size == 1. CI runs this on every series x arch leg.
 ./test/smoke-test.sh mariadb-galera:test
 
-# 3-node cluster locally: set `image:` in test/docker-compose.yml to your local
-# tag first, then
+# Forced 2-node SST test — n2 joins with an empty datadir, so a full mariabackup
+# SST must succeed (exercises the SST-user GRANTs and the wsrep SST scripts).
+# CI runs this too, right after the smoke test.
+./test/sst-test.sh mariadb-galera:test
+
+# 3-node cluster locally (defaults to ghcr.io/athegreat90/mariadb-galera:lts;
+# override with TAG=11.8, or edit `image:` to use a local tag)
 docker compose -f test/docker-compose.yml up
 
 # Lint the shell scripts (all use `set -Eeuo pipefail`; keep them shellcheck-clean)
-shellcheck rootfs/usr/local/bin/*.sh test/smoke-test.sh
+shellcheck rootfs/usr/local/bin/*.sh test/smoke-test.sh test/sst-test.sh
 
-# Refresh the pinned base image digest (the FROM line ships a placeholder digest)
-docker buildx imagetools inspect mariadb:11.8 --format '{{ .Manifest.Digest }}'
+# Resolve a series' current upstream digest (what base-image-watch.yml writes to
+# .github/base-images.json)
+docker buildx imagetools inspect docker.io/library/mariadb:12.3 --format '{{ .Manifest.Digest }}'
 ```
+
+On Windows, `.gitattributes` forces LF for scripts, the Dockerfile and `rootfs/`
+(with `core.autocrlf=true` a CRLF checkout gets copied into the image and the
+entrypoint dies with `bash\r: No such file or directory`).
 
 ## Architecture
 
@@ -74,32 +92,72 @@ Connects over the unix socket as root (password from
 still serving). Used by both the Dockerfile `HEALTHCHECK` and the compose file, and
 `depends_on: service_healthy` is what serializes node startup in the compose test.
 
+### Galera packaging per series
+MariaDB 12.3 unbundled the Galera server hooks into a `mariadb-server-galera`
+package; 11.8 has no such package. The Dockerfile installs it only when
+`apt-cache show mariadb-server-galera` finds it, alongside `galera-4` (provider
+`26.4.x`, wsrep API 26 on both series, so a mixed 11.8/12.3 cluster replicates).
+
 ### Base image pinning
-`FROM mariadb:11.8@sha256:<digest>` is pinned by digest. Three things act on it:
-- **Dependabot** (`docker` ecosystem) bumps the tag.
-- **`base-image-watch.yml`** (daily cron) compares the pinned digest to the live
-  `mariadb:11.8` digest; on drift it `sed`s the new digest into the `Dockerfile`,
-  commits, and calls `build.yml` via `workflow_call` for that commit.
-- **`build.yml`** re-parses the `FROM` line to pass `BASE_IMAGE_REF` / `BASE_IMAGE_DIGEST`
-  into OCI labels.
+`.github/base-images.json` is the single source of truth for base images:
+
+```json
+{ "latest_lts": "12.3",
+  "series": { "<series>": { "ref": "docker.io/library/mariadb:<series>",
+                            "digest": "sha256:…", "note": "…" } } }
+```
+
+`latest_lts` must be one of the `series` keys; it decides which series gets the
+`:latest` and `:lts` tags. There is no `FROM <literal>` in the `Dockerfile` — it is
+`ARG BASE_IMAGE` (default: the current LTS, so a bare `docker build .` works) and CI
+passes `BASE_IMAGE=<ref>@<digest>`. Two things act on the JSON:
+- **`base-image-watch.yml`** (daily cron) loops every series, compares the pinned
+  digest to the live one, rewrites the JSON with `jq` for those that moved, commits
+  (`chore: bump MariaDB base image digest(s) [<series>]`) and calls `build.yml` via
+  `workflow_call` with `ref` and `series` so only the moved series rebuilds.
+- **`build.yml`** feeds `ref` / `digest` from the JSON into the build and the OCI
+  `base.name` / `base.digest` labels.
+
+Dependabot's `docker` ecosystem is intentionally **not** used (it would edit a
+`FROM` line that no longer exists); only `github-actions` remains.
 
 ### CI (`.github/workflows/build.yml`)
-- `build` matrix: native runners per arch (`ubuntu-24.04`, `ubuntu-24.04-arm`).
-  Builds with `load: true` → runs `./test/smoke-test.sh` on real hardware for that
-  arch → rebuilds (cache hit) and pushes **by digest** (`push-by-digest=true`, no
-  tag) with provenance + SBOM. Digests are uploaded as artifacts.
-- `merge`: downloads the per-arch digests, `docker buildx imagetools create`s the
-  multi-arch manifest with all tags/annotations from `docker/metadata-action`, then
-  `attest-build-provenance`. Tags (`11.8`, `11.8-<timestamp>`, `latest`) only apply
-  on the default branch; `v*` tags produce semver tags.
+- `setup`: reads `base-images.json` and emits the series × arch matrix, `series_list`
+  and `latest_lts`. The optional `series` input (comma-separated, empty = all, on
+  `workflow_dispatch` / `workflow_call`) restricts the run.
+- `build` matrix (series × arch, 4 legs): native runners per arch (`ubuntu-24.04`,
+  `ubuntu-24.04-arm`). Builds with `load: true` → asserts the image's real
+  `mariadbd --version` series equals the matrix series (catches a JSON pin pointing at
+  the wrong tag) → runs `./test/smoke-test.sh` and `./test/sst-test.sh` on real
+  hardware → rebuilds (cache hit, scope `<series>-<arch>`) and pushes **by digest**
+  (`push-by-digest=true`, no tag) with provenance + SBOM. Uploads
+  `digest-<series>-<arch>` artifacts, plus (amd64 only) `version-<series>` carrying the
+  full version to `merge` (matrix jobs cannot share job outputs).
+- `merge` (one per series): downloads that series' digests + version,
+  `docker buildx imagetools create`s the multi-arch manifest with all tags/annotations
+  from `docker/metadata-action`, then `attest-build-provenance`. Tags: `<series>`,
+  `<version>`, `<version>-<timestamp>`, `sha-<git-sha>-<series>`, and — only for the
+  `latest_lts` series — `latest` and `lts`. They apply only on the default branch or
+  `v*` tags.
 - `publish-public`: best-effort (`continue-on-error`) call to make the GHCR package
   public; uses `GHCR_ADMIN_TOKEN` if set, else `GITHUB_TOKEN`.
-- PRs build + smoke-test only; nothing is pushed.
+- PRs build + smoke/SST-test all four legs; nothing is pushed.
+
+### Adding / retiring a MariaDB series
+- **Add** (e.g. a new LTS `13.x`): add a `series` entry to `base-images.json` with the
+  resolved digest; if it becomes the newest LTS, move `latest_lts` to it (the old
+  series keeps its `<series>` tags but loses `:latest` / `:lts` on the next build).
+  Check the PR's 4 new legs pass (the package split and SST GRANTs are the usual
+  breakages), and update the README tag table.
+- **Retire** (upstream EOL): delete its `series` entry (never the one named by
+  `latest_lts`). Already-published tags stay in GHCR but stop being rebuilt; say so in
+  the README.
+- The 11.8 series is maintained until upstream EOL (2028-06); 12.3 until ~2029-06.
 
 ## Conventions
 
-- Commit prefixes: `chore(docker)`, `chore(actions)` (Dependabot); `chore:` for the
-  base-image bot. Keep that style.
+- Commit prefixes: `chore(actions)` (Dependabot); `chore:` for the base-image bot.
+  Keep that style.
 - Shell scripts: bash with `set -Eeuo pipefail`, `log()` to stderr with a UTC
   timestamp, secrets written under `umask 0077`.
 - The `test -f /usr/lib/galera/libgalera_smm.so` at the end of the Dockerfile `RUN`
