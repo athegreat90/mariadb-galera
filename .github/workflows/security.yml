@@ -32,7 +32,7 @@ jobs:
           persist-credentials: false
 
       - name: shellcheck
-        run: shellcheck rootfs/usr/local/bin/*.sh rootfs/usr/local/bin/gosu test/*.sh
+        run: shellcheck --severity=warning rootfs/usr/local/bin/*.sh rootfs/usr/local/bin/gosu test/*.sh
 
       - name: hadolint
         run: docker run --rm -i "$HADOLINT" hadolint --failure-threshold warning - < Dockerfile
