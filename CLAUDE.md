@@ -36,8 +36,9 @@ docker build -t mariadb-galera:test-11.8 \
 ./test/sst-test.sh mariadb-galera:test
 
 # Outage-recovery test — SIGKILLs both nodes (as in the 2026-09-15 quorum loss), checks
-# the bootstrap guard, recovers with galera-recover.sh, and checks the provider-options
-# env vars. CI runs this after the SST test.
+# the bootstrap guard, recovers with galera-recover.sh, checks the provider-options
+# env vars, and checks that a plain restart of the bootstrapped container rejoins
+# instead of bootstrapping again. CI runs this after the SST test.
 ./test/resilience-test.sh mariadb-galera:test
 
 # 3-node cluster locally (defaults to ghcr.io/athegreat90/mariadb-galera:lts;
@@ -94,6 +95,14 @@ Its own job:
    `safe_to_bootstrap: 0` and no FORCE, it exits 1 with an explanation (a stale BOOTSTRAP
    env — container env is frozen at create time — or a full-cluster outage) instead of
    letting Galera abort cryptically. With `safe_to_bootstrap: 1` it warns to remove the flag.
+   Once-per-container rule: when it honors BOOTSTRAP=yes it writes the marker
+   `/etc/mysql/galera.conf.d/.bootstrap-consumed` (container writable layer). A later start of
+   the same container (`docker restart`, dockerd upgrade, host reboot) sees the marker,
+   logs `bootstrap flags already used by an earlier start of this container`, and treats
+   BOOTSTRAP/FORCE_SAFETOBOOTSTRAP as `no`, so a frozen `BOOTSTRAP=yes` env can no longer
+   fork a one-node cluster. Recreating the container (`--force-recreate`) removes the
+   marker; `docker restart` does not re-bootstrap. A refused bootstrap exits before the
+   marker is written. Covered by step 7 of `test/resilience-test.sh`.
 6. Appends word-split `MARIADB_GALERA_EXTRA_FLAGS`.
 
 `galera-recover.sh` (same directory) is run by hand against a *stopped* node's datadir

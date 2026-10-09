@@ -106,6 +106,20 @@ fi
 
 extra_args=()
 
+# Container env is frozen at creation, so BOOTSTRAP=yes survives in a running
+# container long after the operator reverted the compose file. Honoring it on every
+# start would make a plain restart (dockerd upgrade, host reboot) form a brand-new
+# one-node cluster next to the real one. The marker lives in the container's writable
+# layer: it survives `docker restart` but is gone once the container is recreated, so
+# the bootstrap flags take effect once per container.
+bootstrap_consumed="/etc/mysql/galera.conf.d/.bootstrap-consumed"
+if [ "${MARIADB_GALERA_CLUSTER_BOOTSTRAP}" = "yes" ] && [ -f "${bootstrap_consumed}" ]; then
+  log "WARNING: bootstrap flags already used by an earlier start of this container; ignoring them and joining the cluster"
+  log "  (to bootstrap again, recreate the container: docker compose up -d --force-recreate)"
+  MARIADB_GALERA_CLUSTER_BOOTSTRAP=no
+  MARIADB_GALERA_FORCE_SAFETOBOOTSTRAP=no
+fi
+
 if [ "${MARIADB_GALERA_CLUSTER_BOOTSTRAP}" = "yes" ]; then
   if [ -f "${grastate}" ]; then
     if [ "${MARIADB_GALERA_FORCE_SAFETOBOOTSTRAP}" = "yes" ]; then
@@ -123,6 +137,7 @@ if [ "${MARIADB_GALERA_CLUSTER_BOOTSTRAP}" = "yes" ]; then
       log "  later restart rejoins the cluster instead of forming a new one"
     fi
   fi
+  : > "${bootstrap_consumed}"
   log "bootstrapping a new cluster (--wsrep-new-cluster)"
   extra_args+=(--wsrep-new-cluster)
 fi

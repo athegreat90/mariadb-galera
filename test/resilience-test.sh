@@ -6,7 +6,10 @@
 #   * bootstrapping such a node without FORCE is refused with a clear message
 #     (the stale MARIADB_GALERA_CLUSTER_BOOTSTRAP=yes crash-loop);
 #   * galera-recover.sh finds the most advanced node, which then bootstraps the
-#     cluster back with the data intact.
+#     cluster back with the data intact;
+#   * a plain `docker restart` of that bootstrapped container (frozen env still says
+#     BOOTSTRAP=yes, as after a dockerd upgrade) joins the cluster instead of forming
+#     a new one-node cluster, and recreating the container honors the flags again.
 set -Eeuo pipefail
 
 IMAGE="${1:?usage: resilience-test.sh IMAGE}"
@@ -70,7 +73,7 @@ recover() { # recover NODE -> "uuid=... seqno=... safe_to_bootstrap=..."
 
 docker network create "$NET" >/dev/null
 
-log "1/6 bootstrap n1 with IST bind + evs timeouts, check they reach the provider"
+log "1/7 bootstrap n1 with IST bind + evs timeouts, check they reach the provider"
 start_node n1 -e MARIADB_GALERA_CLUSTER_BOOTSTRAP=yes
 wait_healthy n1
 popts="$(sql n1 "SHOW VARIABLES LIKE 'wsrep_provider_options'")"
@@ -78,7 +81,7 @@ for want in 'ist.recv_bind = 0.0.0.0' 'evs.suspect_timeout = PT10S' 'evs.inactiv
   grep -qF "$want" <<< "$popts" || fail "wsrep_provider_options is missing '$want'"
 done
 
-log "2/6 join n2, write a canary row"
+log "2/7 join n2, write a canary row"
 sql n1 "CREATE DATABASE canary; CREATE TABLE canary.t (id INT PRIMARY KEY); INSERT INTO canary.t VALUES (1);"
 start_node n2
 wait_healthy n2
@@ -86,11 +89,11 @@ wait_healthy n2
 sql n1 "INSERT INTO canary.t VALUES (2)"
 for _ in $(seq 1 10); do [ "$(sql n2 "SELECT COUNT(*) FROM canary.t")" = "2" ] && break; sleep 1; done
 
-log "3/6 SIGKILL both nodes at once (unclean shutdown everywhere)"
+log "3/7 SIGKILL both nodes at once (unclean shutdown everywhere)"
 docker kill "${CNAME[n1]}" "${CNAME[n2]}" >/dev/null
 docker rm -f "${CNAME[n1]}" "${CNAME[n2]}" >/dev/null
 
-log "4/6 bootstrap without FORCE must be refused with an explanation"
+log "4/7 bootstrap without FORCE must be refused with an explanation"
 set +e
 out="$(docker run --rm --network "$NET" --network-alias n1 -v "${VOL[n1]}:/var/lib/mysql" \
   -e MARIADB_ROOT_PASSWORD="$ROOT_PW" -e MARIADB_GALERA_CLUSTER_NAME=res \
@@ -103,7 +106,7 @@ set -e
 grep -q 'refusing to bootstrap' <<< "$out" || fail "refusal message missing; got: $(tail -n 5 <<< "$out")"
 grep -q 'galera-recover.sh' <<< "$out" || fail "refusal message does not mention galera-recover.sh"
 
-log "5/6 find the most advanced node with galera-recover.sh"
+log "5/7 find the most advanced node with galera-recover.sh"
 r1="$(recover n1)"; r2="$(recover n2)"
 log "  n1: $r1"; log "  n2: $r2"
 s1="$(sed -E 's/.*seqno=(-?[0-9]+).*/\1/' <<< "$r1")"
@@ -114,7 +117,7 @@ best=n1; other=n2
 if [ "$s2" -gt "$s1" ]; then best=n2; other=n1; fi
 log "  bootstrapping from $best"
 
-log "6/6 bootstrap $best with FORCE, rejoin $other, check the data"
+log "6/7 bootstrap $best with FORCE, rejoin $other, check the data"
 start_node "$best" -e MARIADB_GALERA_CLUSTER_BOOTSTRAP=yes -e MARIADB_GALERA_FORCE_SAFETOBOOTSTRAP=yes
 wait_healthy "$best"
 start_node "$other"
@@ -125,4 +128,29 @@ for n in n1 n2; do
   [ "$(sql "$n" "SELECT COUNT(*) FROM canary.t")" = "2" ] || fail "canary data missing or wrong on $n after recovery"
 done
 
-log "OK: options applied, unclean outage refused/recovered via galera-recover.sh with data intact"
+log "7/7 restart $best (frozen BOOTSTRAP=yes env): must join, not bootstrap again"
+out="$(docker logs "${CNAME[$best]}" 2>&1)"
+boots_before="$(grep -c 'bootstrapping a new cluster' <<< "$out" || true)"
+[ "$boots_before" -eq 1 ] || fail "expected exactly 1 bootstrap in the first start of $best, got $boots_before"
+docker restart -t 60 "${CNAME[$best]}" >/dev/null
+wait_healthy "$best"
+out="$(docker logs "${CNAME[$best]}" 2>&1)"
+boots_after="$(grep -c 'bootstrapping a new cluster' <<< "$out" || true)"
+[ "$boots_after" -eq "$boots_before" ] || fail "$best formed a new cluster again after a plain restart ($boots_after bootstraps)"
+grep -q 'bootstrap flags already used' <<< "$out" \
+  || fail "$best restart did not log that the bootstrap flags were ignored"
+[ "$(status "$best" wsrep_cluster_size)" = "2" ] || fail "$best did not rejoin the running cluster after the restart"
+[ "$(status "$best" wsrep_local_state_comment)" = "Synced" ] || fail "$best is not Synced after the restart"
+
+log "  recreating $best (new container) must honor the bootstrap flags again"
+docker rm -f "${CNAME[$other]}" "${CNAME[$best]}" >/dev/null
+start_node "$best" -e MARIADB_GALERA_CLUSTER_BOOTSTRAP=yes -e MARIADB_GALERA_FORCE_SAFETOBOOTSTRAP=yes
+wait_healthy "$best"
+out="$(docker logs "${CNAME[$best]}" 2>&1)"
+grep -q 'bootstrapping a new cluster' <<< "$out" || fail "recreated $best did not honor the bootstrap flags"
+if grep -q 'bootstrap flags already used' <<< "$out"; then
+  fail "recreated $best wrongly reported the bootstrap flags as already used"
+fi
+[ "$(sql "$best" "SELECT COUNT(*) FROM canary.t")" = "2" ] || fail "canary data missing on $best after recreate"
+
+log "OK: options applied, unclean outage refused/recovered via galera-recover.sh with data intact, bootstrap honored once per container"
