@@ -72,7 +72,7 @@ variable and its `_FILE` form is an error.
 | `MARIADB_GALERA_CLUSTER_ADDRESS` | `gcomm://` | `gcomm://host1,host2,host3` — the list of cluster members. Bare `gcomm://` means "start a new cluster" (see bootstrap below). |
 | `MARIADB_GALERA_NODE_NAME` | container hostname | This node's name in the cluster. |
 | `MARIADB_GALERA_NODE_ADDRESS` | auto-detected | The address other nodes use to reach this one. Auto-detected from the default route; set it explicitly on multi-NIC hosts or when detection is wrong. |
-| `MARIADB_GALERA_CLUSTER_BOOTSTRAP` | `no` | Set to `yes` on **exactly one** node to create a brand-new cluster (adds `--wsrep-new-cluster`). All other nodes leave this unset and join it. |
+| `MARIADB_GALERA_CLUSTER_BOOTSTRAP` | `no` | Set to `yes` on **exactly one** node to create a brand-new cluster (adds `--wsrep-new-cluster`). All other nodes leave this unset and join it. Honored **once per container**: a plain restart of the same container (`docker restart`, a Docker upgrade, a host reboot) ignores it with a warning and rejoins the cluster; recreating the container honors it again. |
 | `MARIADB_GALERA_FORCE_SAFETOBOOTSTRAP` | `no` | Recovery only. With `CLUSTER_BOOTSTRAP=yes`, forces `safe_to_bootstrap: 1` in `grastate.dat` so a node that wasn't cleanly shut down can still bootstrap. |
 | `MARIADB_GALERA_MARIABACKUP_USER` | `mariabackup` | Username for the SST account. |
 | `MARIADB_GALERA_SST_METHOD` | `mariabackup` | State-transfer method. `mariabackup` is non-blocking and recommended. |
@@ -217,8 +217,12 @@ services:
   `stop_grace_period: 60s` (Compose) or `--stop-timeout 60` (`docker run`).
 - **Container environment is frozen when the container is created.** After changing any
   `MARIADB_GALERA_*` variable, recreate the container (`docker compose up -d
-  --force-recreate`). A stale `MARIADB_GALERA_CLUSTER_BOOTSTRAP=yes` left in a running
-  container makes every restart try to start a new cluster.
+  --force-recreate`). The bootstrap flags are honored only on the first start of a
+  container (a marker in its writable layer records this), so a stale
+  `MARIADB_GALERA_CLUSTER_BOOTSTRAP=yes` can no longer fork a new cluster on a plain
+  restart; the entrypoint logs a warning and rejoins instead. Still remove the variable
+  from your compose file once the cluster exists, and to bootstrap again recreate the
+  container: `docker restart` will not do it.
 
 ## Using secrets instead of plaintext
 
@@ -298,6 +302,11 @@ If a node crash-loops with `safe_to_bootstrap` in its log even though you never 
 to bootstrap, `MARIADB_GALERA_CLUSTER_BOOTSTRAP=yes` is still set on the running
 container: remove it and recreate the container.
 
+The bootstrap flags are honored once per container. If a start of the bootstrap node
+fails before MariaDB comes up and the container restarts on its own, the restart ignores
+the flags (log line `bootstrap flags already used`) and tries to join instead; recreate
+the container (`docker compose up -d --force-recreate`) to bootstrap again.
+
 ## Build it yourself
 
 ```bash
@@ -312,7 +321,8 @@ docker build -t mariadb-galera:local-11.8 \
 # forced 2-node state transfer test (joiner receives data via mariabackup SST)
 ./test/sst-test.sh mariadb-galera:local
 
-# outage test: kills both nodes, checks the bootstrap guard and galera-recover.sh
+# outage test: kills both nodes, checks the bootstrap guard and galera-recover.sh,
+# then checks that restarting the bootstrapped container rejoins instead of re-bootstrapping
 ./test/resilience-test.sh mariadb-galera:local
 ```
 
