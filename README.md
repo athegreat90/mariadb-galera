@@ -214,7 +214,9 @@ services:
 - **Give MariaDB time to stop cleanly.** Docker kills a container after 10 s by default.
   A node killed mid-shutdown leaves `seqno: -1` in `grastate.dat`, and if every node is
   killed that way none of them can bootstrap on its own. Set
-  `stop_grace_period: 60s` (Compose) or `--stop-timeout 60` (`docker run`).
+  `stop_grace_period: 60s` (Compose) or `--stop-timeout 60` (`docker run`); the
+  example in `test/docker-compose.yml` does. This only helps for orderly stops: a
+  power loss still leaves `seqno: -1`, see [The whole cluster is down](#the-whole-cluster-is-down).
 - **Container environment is frozen when the container is created.** After changing any
   `MARIADB_GALERA_*` variable, recreate the container (`docker compose up -d
   --force-recreate`). The bootstrap flags are honored only on the first start of a
@@ -274,6 +276,36 @@ unclean shutdown every node shows `seqno: -1` and `safe_to_bootstrap: 0` in
 `grastate.dat`, so the file cannot tell you which node that is — the image ships a helper
 that can.
 
+**Automatic part.** When a node starts with `seqno: -1`, the entrypoint runs the same
+recovery (`galera-recover.sh`) before MariaDB starts and logs one line:
+
+```text
+[galera-entrypoint] recovered position <cluster-uuid>:<seqno>
+```
+
+It is informational only: no node bootstraps itself, `safe_to_bootstrap` is never
+changed, and if recovery fails the entrypoint logs a warning and starts normally.
+With every node restarted (without the bootstrap flags), compare that line across the
+nodes (`docker logs <container> | grep 'recovered position'`); the highest `seqno` wins.
+
+**Guided bootstrap.** `scripts/galera-full-outage-recover.sh` does the comparing for you
+over ssh and bootstraps the winner only after you confirm:
+
+```bash
+scripts/galera-full-outage-recover.sh \
+  --bootstrap-cmd 'cd /srv/galera && docker compose up -d --force-recreate node' \
+  hostA:galera-node hostB:galera-node local:galera-node
+```
+
+Nodes are `SSH_HOST:CONTAINER` (`local` for this machine) and must all be listed. The
+script refuses if a node is unreachable, has no readable position, or the cluster uuids
+differ; `--force` (with the explicit list) overrides that at your own risk. The
+`--bootstrap-cmd` runs on the winner with `MARIADB_GALERA_CLUSTER_BOOTSTRAP=yes` and
+`MARIADB_GALERA_FORCE_SAFETOBOOTSTRAP=yes` set, so your compose file must pass those
+through. Without `--bootstrap-cmd` it only prints the plan. `--yes` skips the prompt.
+
+**Manual steps** (what the script automates):
+
 1. Stop every node's container. On each node, run the helper against that node's data
    directory (the node must not be running):
 
@@ -324,6 +356,10 @@ docker build -t mariadb-galera:local-11.8 \
 # outage test: kills both nodes, checks the bootstrap guard and galera-recover.sh,
 # then checks that restarting the bootstrapped container rejoins instead of re-bootstrapping
 ./test/resilience-test.sh mariadb-galera:local
+
+# full-outage test: kills every node, checks each logs its recovered position and
+# that none bootstraps itself
+./test/outage-recover-test.sh mariadb-galera:local
 ```
 
 The `Dockerfile` takes its base from the `BASE_IMAGE` build argument. CI passes the
