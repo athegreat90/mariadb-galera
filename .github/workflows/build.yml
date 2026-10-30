@@ -157,6 +157,9 @@ jobs:
       - name: Outage-recovery test on ${{ matrix.arch }}
         run: ./test/resilience-test.sh mariadb-galera:test
 
+      - name: Full-outage auto-recovery test on ${{ matrix.arch }}
+        run: ./test/outage-recover-test.sh mariadb-galera:test
+
       # Second call is a cache hit; it only re-exports and pushes.
       - name: Build and push by digest
         id: push

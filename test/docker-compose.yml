@@ -7,6 +7,7 @@ x-node: &node
     MARIADB_GALERA_CLUSTER_NAME: demo
     MARIADB_GALERA_CLUSTER_ADDRESS: gcomm://node1,node2,node3
     MARIADB_GALERA_MARIABACKUP_PASSWORD: backuppass
+  stop_grace_period: 60s
   healthcheck:
     test: ["CMD", "/usr/local/bin/galera-healthcheck.sh"]
     interval: 15s
