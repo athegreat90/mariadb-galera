@@ -319,10 +319,16 @@ jobs:
     steps:
       - name: Ensure the package is public
         env:
-          GH_TOKEN: ${{ secrets.GHCR_ADMIN_TOKEN || secrets.GITHUB_TOKEN }}
+          # GITHUB_TOKEN cannot change package visibility (the API answers 404),
+          # so this step needs a PAT with package admin rights.
+          GH_TOKEN: ${{ secrets.GHCR_ADMIN_TOKEN }}
           OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::notice::GHCR_ADMIN_TOKEN is not set; skipping the package visibility change"
+            exit 0
+          fi
           pkg="${GITHUB_REPOSITORY##*/}"
           owner_type="$(gh api "/users/${OWNER}" --jq .type)"
           if [ "$owner_type" = "Organization" ]; then
