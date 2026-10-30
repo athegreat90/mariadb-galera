@@ -87,9 +87,12 @@ log "2/6 SIGKILL both nodes at once (full-cluster outage)"
 docker kill "${CNAME[n1]}" "${CNAME[n2]}" >/dev/null
 docker rm -f "${CNAME[n1]}" "${CNAME[n2]}" >/dev/null
 
-log "3/6 restart both with BOOTSTRAP=no (as after a power loss)"
-start_node n1
-start_node n2
+# pc.recovery (default on) re-forms the Primary component by itself when every member of
+# the last one comes back together, which would hide the scenario under test. Switch it off
+# on the restart to reproduce the real outage: nodes that cannot agree on a Primary.
+log "3/6 restart both with BOOTSTRAP=no and pc.recovery off (nodes cannot re-form a Primary alone)"
+start_node n1 -e MARIADB_GALERA_PROVIDER_OPTIONS=pc.recovery=false
+start_node n2 -e MARIADB_GALERA_PROVIDER_OPTIONS=pc.recovery=false
 
 log "4/6 each node must log a parseable recovered position"
 declare -A POS

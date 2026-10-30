@@ -83,7 +83,21 @@ grastate_val() { sed -n "s/^$1:[[:space:]]*//p" "${grastate}" 2>/dev/null | head
 if [ -f "${grastate}" ]; then
   log "grastate: uuid=$(grastate_val uuid) seqno=$(grastate_val seqno) safe_to_bootstrap=$(grastate_val safe_to_bootstrap)"
   if [ "$(grastate_val seqno)" = "-1" ]; then
-    log "previous shutdown was not clean (seqno -1). If every node is down, run galera-recover.sh on each to find the most advanced one"
+    log "previous shutdown was not clean (seqno -1); recovering this node's position (read-only: nothing is bootstrapped)"
+    # Informational only: runs InnoDB crash recovery via galera-recover.sh and logs the
+    # result. It never touches safe_to_bootstrap and never adds --wsrep-new-cluster, so
+    # the operator still picks the node to bootstrap (scripts/galera-full-outage-recover.sh).
+    # A failure here must not block startup.
+    recover_err="$(mktemp)"
+    if recovered="$(/usr/local/bin/galera-recover.sh 2>"${recover_err}")" \
+       && [[ "${recovered}" =~ uuid=([^[:space:]]+)[[:space:]]+seqno=(-?[0-9]+) ]]; then
+      log "recovered position ${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"
+      log "  if every node is down, bootstrap the one with the highest seqno (see README: The whole cluster is down)"
+    else
+      log "WARNING: could not recover this node's position; starting normally. Last lines of the recovery log:"
+      tail -n 10 "${recover_err}" >&2 || true
+    fi
+    rm -f "${recover_err}"
   fi
 fi
 
