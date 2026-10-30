@@ -23,7 +23,7 @@ Only: `rootfs/usr/local/bin/galera-entrypoint.sh`, `scripts/galera-full-outage-r
 - [x] T2 `test/outage-recover-test.sh`: SIGKILL all nodes, restart BOOTSTRAP=no, assert non-primary, recovered-position line logged, no self-bootstrap; wire into `build.yml`; add `stop_grace_period: 60s` to `test/docker-compose.yml`.
 - [x] T3 `scripts/galera-full-outage-recover.sh`: read positions, refuse on unreachable/unreadable unless `--force` + explicit list, pick highest seqno, confirm before bootstrap.
 - [x] T4 `README.md`: log line, script, grace-period advice.
-- [ ] T5 rollout (needs explicit go-ahead): fresh backup, pi5 -> a8 -> Home Assistant add-on, verify size 3 Synced.
+- [x] T5 rollout (needs explicit go-ahead): fresh backup, pi5 -> a8 -> Home Assistant add-on, verify size 3 Synced.
 
 ## Acceptance
 shellcheck + hadolint clean; new test passes with smoke, SST and resilience tests on 11.8 and 12.3; after rollout `wsrep_cluster_size=3`, Primary, gotify row counts unchanged.
@@ -37,7 +37,10 @@ T1-T4: delegated direct, one writer (4+ non-trivial files; mapping done by explo
 - GREEN: test passes on 12.3 and 11.8 after the entrypoint change; smoke, resilience and sst tests pass on 12.3.
 - Finding: with default pc.recovery=true both SIGKILLed nodes restarted together re-form a Primary alone (gvwstate.dat), so the test restarts them with `pc.recovery=false` to reproduce the real non-primary outage.
 - shellcheck (koalaman/shellcheck:stable) clean on the entrypoint, the new test and the new script. Script exercised with a stub `docker` (readable, unreadable refusal, --force, --yes, no-tty refusal).
-- Not run: hadolint, CI.
+- hadolint and CI: PR #15 CI green (lint, secrets, image-scan, 4 build legs), squash-merged as 9c8a53a; the `main` build published `:lts` with the change.
+- T5 (inline, user-authorized 2026-10-30): fresh backup on a8 (`backups/20261030-133147`), then pi5, a8 and the Home Assistant add-on (`ha addons rebuild local_mariadb_galera_node`), one at a time. After each step: `wsrep_cluster_size=3`, Primary, Synced. Gotify row counts unchanged (messages 1049, clients 4, applications 3, users 1, plugin_confs 0).
+- Not confirmed: whether the Home Assistant rebuild pulled the new base image (local add-on, Dockerfile not visible from the SSH add-on).
+- Engram mirror `odd/outage-auto-recover/tasks` is still pending: `mem_save` failed with a session-registration error.
 
 ## Next step
-Review, then push/PR on the user's go-ahead. T5 rollout stays user-gated.
+None for this feature. Optionally confirm the Home Assistant add-on's base image.
